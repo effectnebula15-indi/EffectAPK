@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <AssemblyName>EffectApk</AssemblyName>
+    <RootNamespace>EffectApk</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <!-- WinForms нужен только ради NotifyIcon (системный трей) -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <PlatformTarget>x64</PlatformTarget>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\EffectApk.ico</ApplicationIcon>
+    <Version>0.2.0</Version>
+    <Description>EffectAPK — открывает .apk-файлы в нативном resizable-окне Windows через headless Android-эмулятор и scrcpy.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- WinForms подключён только ради NotifyIcon; его глобальный using конфликтует с WPF (Application, MessageBox) -->
+    <Using Remove="System.Windows.Forms" />
+  </ItemGroup>
+
+</Project>

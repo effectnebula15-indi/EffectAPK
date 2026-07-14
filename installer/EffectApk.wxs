@@ -1,0 +1,72 @@
+<!-- EffectAPK — per-user MSI (устанавливается без прав администратора).
+     Сборка: installer\build.ps1 (требует WiX v5+: dotnet tool install ~~global wix) -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+
+  <Package Name="EffectAPK"
+           Manufacturer="EffectNebula"
+           Version="0.2.0"
+           UpgradeCode="B45A2B8E-6D0F-4E5B-93A1-2D84C0A11B31"
+           Scope="perUser"
+           Language="1033"
+           Compressed="yes">
+
+    <SummaryInformation Description="EffectAPK — open .apk files in a native Windows window" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of EffectAPK is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="AppIcon" SourceFile="$(var.IconPath)" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+
+    <!-- %LOCALAPPDATA%\Programs\EffectAPK -->
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsFolderDir" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="EffectAPK" />
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder" />
+
+    <!-- Все файлы из папки publish -->
+    <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
+      <Files Include="$(var.PublishDir)\**" />
+    </ComponentGroup>
+
+    <!-- Ярлык в меню «Пуск» -->
+    <Component Id="StartMenuShortcut" Directory="ProgramMenuFolder">
+      <Shortcut Id="EffectApkShortcut"
+                Name="EffectAPK"
+                Target="[INSTALLFOLDER]EffectApk.exe"
+                WorkingDirectory="INSTALLFOLDER"
+                Icon="AppIcon" />
+      <RegistryValue Root="HKCU" Key="Software\EffectApk" Name="ShortcutInstalled"
+                     Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+    <!-- Ассоциация .apk (per-user, HKCU\Software\Classes) -->
+    <Component Id="ApkAssociation" Directory="INSTALLFOLDER">
+      <RegistryKey Root="HKCU" Key="Software\Classes\.apk">
+        <RegistryValue Type="string" Value="EffectApk.ApkFile" />
+      </RegistryKey>
+      <RegistryKey Root="HKCU" Key="Software\Classes\EffectApk.ApkFile">
+        <RegistryValue Type="string" Value="Android application (EffectAPK)" />
+        <RegistryValue Key="DefaultIcon" Type="string"
+                       Value="&quot;[INSTALLFOLDER]EffectApk.exe&quot;,0" />
+        <RegistryValue Key="shell\open\command" Type="string"
+                       Value="&quot;[INSTALLFOLDER]EffectApk.exe&quot; &quot;%1&quot;" />
+      </RegistryKey>
+      <RegistryValue Root="HKCU" Key="Software\EffectApk" Name="AssociationInstalled"
+                     Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+    <Feature Id="Main" Title="EffectAPK">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentRef Id="StartMenuShortcut" />
+      <ComponentRef Id="ApkAssociation" />
+    </Feature>
+
+    <!-- Минималистичный UI: приветствие + лицензия + прогресс -->
+    <ui:WixUI Id="WixUI_Minimal" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(sys.SOURCEFILEDIR)license.rtf" />
+
+  </Package>
+</Wix>
