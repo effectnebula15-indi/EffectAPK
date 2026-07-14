@@ -28,7 +28,8 @@ public sealed class ScrcpySession
     public bool HasExited => _process?.HasExited ?? true;
 
     public static async Task<ScrcpySession> StartAsync(
-        AppSettings settings, string packageName, AdbService adb, CancellationToken ct)
+        AppSettings settings, string packageName, AdbService adb,
+        int displayWidth, int displayHeight, CancellationToken ct)
     {
         var scrcpyExe = settings.ScrcpyExe
             ?? throw new InvalidOperationException("scrcpy не найден — запустите мастер настройки.");
@@ -38,7 +39,7 @@ public sealed class ScrcpySession
 
         var args = string.Join(' ',
             "-s", settings.EmulatorSerial,
-            $"--new-display={settings.DisplayWidth}x{settings.DisplayHeight}/{settings.DisplayDpi}",
+            $"--new-display={displayWidth}x{displayHeight}/{settings.DisplayDpi}",
             $"--start-app={packageName}",
             $"--window-title={session.WindowTitle}",
             "--window-borderless");

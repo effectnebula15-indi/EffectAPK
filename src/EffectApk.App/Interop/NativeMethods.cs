@@ -12,6 +12,12 @@ internal static class NativeMethods
         public readonly int Height => Bottom - Top;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct POINT
+    {
+        public int X, Y;
+    }
+
     public const int GWL_STYLE = -16;
 
     public const uint WS_CHILD = 0x40000000;
@@ -25,8 +31,14 @@ internal static class NativeMethods
 
     public const int WM_SIZING = 0x0214;
     public const int WM_EXITSIZEMOVE = 0x0232;
+    public const int WM_SYSCOMMAND = 0x0112;
     public const int VK_SHIFT = 0x10;
     public const int SW_SHOW = 5;
+
+    /// <summary>Наш пункт «Повернуть» в системном меню (id кратен 16 и меньше 0xF000, как требует WM_SYSCOMMAND).</summary>
+    public const int SC_ROTATE = 0x0100;
+    public const uint MF_STRING = 0x0000;
+    public const uint MF_SEPARATOR = 0x0800;
 
     // Края окна в wParam сообщения WM_SIZING
     public const int WMSZ_LEFT = 1;
@@ -79,6 +91,18 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     public static extern bool DestroyWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern bool ClientToScreen(IntPtr hWnd, ref POINT point);
+
+    [DllImport("user32.dll")]
+    public static extern bool IsWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetSystemMenu(IntPtr hWnd, bool revert);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern bool AppendMenu(IntPtr hMenu, uint flags, UIntPtr idNewItem, string? newItem);
 
     [DllImport("shell32.dll")]
     public static extern void SHChangeNotify(int eventId, uint flags, IntPtr item1, IntPtr item2);

@@ -1,18 +1,24 @@
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
+using System.Windows.Threading;
+using EffectApk.Core;
 using static EffectApk.Interop.NativeMethods;
 
 namespace EffectApk.UI;
 
 /// <summary>
 /// HwndHost, «усыновляющий» окно scrcpy: SetParent + срезание рамок/заголовка + WS_CHILD.
-/// scrcpy продолжает сам рендерить видео и обрабатывать ввод — мы лишь даём ему место в нашем окне.
+/// Важно: при каждой смене разрешения видеопотока scrcpy сам вызывает SDL_SetWindowSize и
+/// «сбегает» из размеров контейнера, поэтому геометрия принудительно контролируется двумя путями:
+/// OnWindowPositionChanged (наши ресайзы) и сторожевой таймер (самовольные ресайзы scrcpy).
 /// </summary>
 public sealed class ScrcpyHost : HwndHost
 {
     private readonly IntPtr _scrcpyHwnd;
     private IntPtr _container;
+    private DispatcherTimer? _watchdog;
+    private DateTime _lastCorrectionLog = DateTime.MinValue;
 
     public ScrcpyHost(IntPtr scrcpyHwnd) => _scrcpyHwnd = scrcpyHwnd;
 
@@ -32,34 +38,69 @@ public sealed class ScrcpyHost : HwndHost
         SetParent(_scrcpyHwnd, _container);
         ShowWindow(_scrcpyHwnd, SW_SHOW);
 
+        _watchdog = new DispatcherTimer(DispatcherPriority.Background)
+        {
+            Interval = TimeSpan.FromMilliseconds(200),
+        };
+        _watchdog.Tick += (_, _) => EnforceChildGeometry();
+        _watchdog.Start();
+
         return new HandleRef(this, _container);
     }
 
     protected override void DestroyWindowCore(HandleRef hwnd)
     {
+        _watchdog?.Stop();
+        _watchdog = null;
         // Отцепляем scrcpy перед уничтожением контейнера: его окном владеет процесс scrcpy
         SetParent(_scrcpyHwnd, IntPtr.Zero);
         DestroyWindow(hwnd.Handle);
     }
 
     /// <summary>
-    /// WPF вызывает это при каждом перемещении/ресайзе контейнера, причём rcBoundingBox —
-    /// уже в физических пикселях. В отличие от OnRenderSizeChanged, срабатывает и при первом
-    /// показе окна, поэтому scrcpy всегда растянут на всю клиентскую область.
+    /// WPF вызывает это при каждом изменении геометрии контейнера (уже в физических пикселях),
+    /// включая первый показ окна — в отличие от OnRenderSizeChanged.
     /// </summary>
     protected override void OnWindowPositionChanged(Rect rcBoundingBox)
     {
         base.OnWindowPositionChanged(rcBoundingBox);
-        if (_scrcpyHwnd == IntPtr.Zero) return;
-
-        var width = Math.Max(1, (int)Math.Round(rcBoundingBox.Width));
-        var height = Math.Max(1, (int)Math.Round(rcBoundingBox.Height));
-        MoveWindow(_scrcpyHwnd, 0, 0, width, height, true);
+        EnforceChildGeometry();
     }
 
     public void FocusChild()
     {
         if (_scrcpyHwnd != IntPtr.Zero)
             SetFocus(_scrcpyHwnd);
+    }
+
+    /// <summary>Если окно scrcpy не совпадает с контейнером — возвращаем его на место.</summary>
+    private void EnforceChildGeometry()
+    {
+        if (_scrcpyHwnd == IntPtr.Zero || _container == IntPtr.Zero) return;
+
+        // scrcpy завершился (окно закрыто/процесс убит) — сторож больше не нужен
+        if (!IsWindow(_scrcpyHwnd))
+        {
+            _watchdog?.Stop();
+            _watchdog = null;
+            return;
+        }
+
+        if (!GetClientRect(_container, out var target) || target.Width < 1 || target.Height < 1) return;
+
+        GetWindowRect(_scrcpyHwnd, out var child);
+        var origin = new POINT();
+        ClientToScreen(_container, ref origin);
+
+        if (child.Left == origin.X && child.Top == origin.Y &&
+            child.Width == target.Width && child.Height == target.Height)
+            return;
+
+        if (DateTime.Now - _lastCorrectionLog > TimeSpan.FromMilliseconds(500))
+        {
+            _lastCorrectionLog = DateTime.Now;
+            Logger.Debug($"Возвращаю scrcpy в контейнер: {child.Width}x{child.Height} → {target.Width}x{target.Height}");
+        }
+        MoveWindow(_scrcpyHwnd, 0, 0, target.Width, target.Height, true);
     }
 }
