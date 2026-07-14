@@ -180,10 +180,11 @@ public partial class App : Application
             displayWidth: displayWidth,
             displayHeight: displayHeight,
             restoredState: restored,
-            applyResolutionAsync: async (width, height) =>
+            applyResolutionAsync: async (width, height, density) =>
             {
-                if (scrcpy.DisplayId is { } displayId)
-                    await adb.SetDisplaySizeAsync(displayId, width, height);
+                if (scrcpy.DisplayId is not { } displayId) return;
+                await adb.SetDisplaySizeAsync(displayId, width, height);
+                await adb.SetDisplayDensityAsync(displayId, density);
             },
             onClosedAsync: async snapshot =>
             {
@@ -216,22 +217,22 @@ public partial class App : Application
         window.Activate();
 
         // scrcpy при старте может сам поставить override-разрешение виртуального дисплея
-        // (реагируя на первый ресайз своего окна при встраивании) — контент тогда
-        // не совпадает по пропорциям с окном. Через пару секунд возвращаем ожидаемое.
+        // (реагируя на первый ресайз своего окна при встраивании) — через пару секунд
+        // синхронизируем дисплей с фактическими пикселями окна (разрешение + плотность).
         _ = Task.Run(async () =>
         {
             try
             {
                 await Task.Delay(2500, _cts.Token);
-                if (scrcpy.DisplayId is { } displayId && !scrcpy.HasExited)
-                    await adb.SetDisplaySizeAsync(displayId, displayWidth, displayHeight);
+                if (!scrcpy.HasExited)
+                    await window.Dispatcher.InvokeAsync(() => _ = window.SyncResolutionToWindowAsync());
             }
             catch (OperationCanceledException)
             {
             }
             catch (Exception ex)
             {
-                Logger.Error("Не удалось зафиксировать разрешение виртуального дисплея", ex);
+                Logger.Error("Не удалось синхронизировать разрешение после старта", ex);
             }
         });
     }

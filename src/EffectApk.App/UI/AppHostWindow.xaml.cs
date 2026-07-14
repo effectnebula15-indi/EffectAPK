@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Threading;
 using EffectApk.Core;
 using static EffectApk.Interop.NativeMethods;
 
@@ -14,21 +15,22 @@ public sealed record WindowSnapshot(
 
 /// <summary>
 /// Нативное окно одного Android-приложения.
-/// Обычный resize держит пропорции видеопотока (перехват WM_SIZING);
-/// resize с зажатым Shift — свободный, после отпускания мыши применяет новое
-/// разрешение к виртуальному Android-дисплею; пункт «Повернуть» в системном
-/// меню (клик по заголовку правой кнопкой) меняет портрет и альбом местами.
+/// Разрешение и плотность виртуального дисплея всегда синхронизируются с окном (рендер 1:1):
+/// обычный resize держит пропорции потока (перехват WM_SIZING) — «зум» без размытия;
+/// Shift+resize — свободный, приложение переверстается под новые пропорции;
+/// «Повернуть» в системном меню меняет портрет и альбом местами.
 /// </summary>
 public partial class AppHostWindow : Window
 {
     private readonly ScrcpyHost _host;
-    private readonly Func<int, int, Task> _applyResolutionAsync; // (ширина, высота) Android-дисплея
+    private readonly Func<int, int, int, Task> _applyResolutionAsync; // (ширина, высота, плотность dpi)
     private readonly bool _restoredGeometry;
+    private readonly DispatcherTimer _syncDebounce;
     private int _displayWidth;
     private int _displayHeight;
     private double _aspect;
-    private bool _shiftResizePending;
-    private bool _rotating;
+    private bool _inSizeMove;
+    private bool _syncing;
 
     public AppHostWindow(
         string title,
@@ -37,7 +39,7 @@ public partial class AppHostWindow : Window
         int displayWidth,
         int displayHeight,
         WindowSnapshot? restoredState,
-        Func<int, int, Task> applyResolutionAsync,
+        Func<int, int, int, Task> applyResolutionAsync,
         Func<WindowSnapshot, Task> onClosedAsync)
     {
         InitializeComponent();
@@ -47,6 +49,14 @@ public partial class AppHostWindow : Window
         _displayHeight = displayHeight;
         _aspect = (double)displayWidth / displayHeight;
         _applyResolutionAsync = applyResolutionAsync;
+
+        // Дебаунс синхронизации для событий вне drag-цикла (максимизация, программный resize)
+        _syncDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) };
+        _syncDebounce.Tick += (_, _) =>
+        {
+            _syncDebounce.Stop();
+            _ = SyncResolutionToWindowAsync();
+        };
 
         if (restoredState is { } saved)
         {
@@ -73,6 +83,7 @@ public partial class AppHostWindow : Window
         Activated += (_, _) => _host.FocusChild();
         Closed += async (_, _) =>
         {
+            _syncDebounce.Stop();
             Logger.Info($"Окно закрыто: {Title}");
             try { await onClosedAsync(Snapshot()); }
             catch (Exception ex) { Logger.Error("Ошибка при закрытии сессии", ex); }
@@ -112,18 +123,47 @@ public partial class AppHostWindow : Window
         }
     }
 
+    /// <summary>
+    /// Приводит разрешение и плотность Android-дисплея к текущим пикселям клиентской области.
+    /// Вызывается после любого изменения размеров окна (и извне — после старта scrcpy,
+    /// который любит сам выставлять override-разрешение).
+    /// </summary>
+    public async Task SyncResolutionToWindowAsync()
+    {
+        if (_syncing) return;
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero) return;
+
+        GetClientRect(hwnd, out var client);
+        if (client.Width < 50 || client.Height < 50) return;
+
+        _syncing = true;
+        try
+        {
+            var (width, height) = ResizePolicy.ComputeAndroidResolution(client.Width, client.Height);
+            var density = ResizePolicy.ComputeDensity(width, height);
+            Logger.Info($"Синхронизация: окно {client.Width}x{client.Height} → дисплей {width}x{height} @ {density} dpi");
+            await _applyResolutionAsync(width, height, density);
+            (_displayWidth, _displayHeight) = (width, height);
+            _aspect = (double)width / height;
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Не удалось синхронизировать разрешение с окном", ex);
+        }
+        finally
+        {
+            _syncing = false;
+        }
+    }
+
     private IntPtr WndHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
         switch (msg)
         {
             case WM_SIZING:
-                var shiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-                if (shiftDown)
-                {
-                    // Свободный resize; новое разрешение применим, когда пользователь отпустит мышь
-                    _shiftResizePending = true;
-                }
-                else
+                // Shift — свободные пропорции (реflow после отпускания), иначе держим аспект потока
+                if ((GetKeyState(VK_SHIFT) & 0x8000) == 0)
                 {
                     var rect = Marshal.PtrToStructure<RECT>(lParam);
                     ConstrainToAspect(hwnd, ref rect, wParam.ToInt32());
@@ -133,13 +173,24 @@ public partial class AppHostWindow : Window
                 }
                 break;
 
-            case WM_EXITSIZEMOVE when _shiftResizePending:
-                _shiftResizePending = false;
-                _ = ApplyShiftResizeAsync(hwnd);
+            case WM_ENTERSIZEMOVE:
+                _inSizeMove = true;
+                break;
+
+            case WM_EXITSIZEMOVE:
+                _inSizeMove = false;
+                _ = SyncResolutionToWindowAsync();
+                break;
+
+            case WM_SIZE when !_inSizeMove &&
+                              (wParam.ToInt64() == SIZE_MAXIMIZED || wParam.ToInt64() == SIZE_RESTORED):
+                // Максимизация/восстановление/программный resize — без WM_EXITSIZEMOVE
+                _syncDebounce.Stop();
+                _syncDebounce.Start();
                 break;
 
             case WM_SYSCOMMAND when (wParam.ToInt64() & 0xFFF0) == SC_ROTATE:
-                _ = RotateAsync();
+                Rotate();
                 handled = true;
                 break;
         }
@@ -188,38 +239,17 @@ public partial class AppHostWindow : Window
         }
     }
 
-    private async Task ApplyShiftResizeAsync(IntPtr hwnd)
+    /// <summary>Портрет ⇄ альбом: меняем местами клиентские размеры окна; синхронизация дисплея произойдёт по WM_SIZE.</summary>
+    private void Rotate()
     {
         try
         {
-            GetClientRect(hwnd, out var clientRect);
-            if (clientRect.Width < 50 || clientRect.Height < 50) return;
+            if (WindowState != WindowState.Normal)
+                WindowState = WindowState.Normal;
 
-            var (width, height) = ResizePolicy.ComputeAndroidResolution(clientRect.Width, clientRect.Height);
-            Logger.Info($"Shift-resize: клиент {clientRect.Width}x{clientRect.Height} → дисплей {width}x{height}");
-            await _applyResolutionAsync(width, height);
-            (_displayWidth, _displayHeight) = (width, height);
-            _aspect = (double)width / height;
-        }
-        catch (Exception ex)
-        {
-            Logger.Error("Не удалось применить новое разрешение Android-дисплея", ex);
-        }
-    }
+            Logger.Info($"Поворот окна: {_displayWidth}x{_displayHeight} → {_displayHeight}x{_displayWidth}");
+            _aspect = 1.0 / _aspect;
 
-    private async Task RotateAsync()
-    {
-        if (_rotating) return;
-        _rotating = true;
-        try
-        {
-            var (newWidth, newHeight) = (_displayHeight, _displayWidth);
-            Logger.Info($"Поворот: {_displayWidth}x{_displayHeight} → {newWidth}x{newHeight}");
-            await _applyResolutionAsync(newWidth, newHeight);
-            (_displayWidth, _displayHeight) = (newWidth, newHeight);
-            _aspect = (double)newWidth / newHeight;
-
-            // Меняем местами клиентские размеры окна, не вылезая за рабочую область
             var chromeW = ActualWidth - _host.ActualWidth;
             var chromeH = ActualHeight - _host.ActualHeight;
             var newClientW = _host.ActualHeight;
@@ -236,10 +266,6 @@ public partial class AppHostWindow : Window
         catch (Exception ex)
         {
             Logger.Error("Поворот не удался", ex);
-        }
-        finally
-        {
-            _rotating = false;
         }
     }
 }

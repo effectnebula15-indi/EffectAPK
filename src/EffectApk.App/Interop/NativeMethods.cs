@@ -29,9 +29,13 @@ internal static class NativeMethods
     public const uint WS_MINIMIZEBOX = 0x00020000;
     public const uint WS_MAXIMIZEBOX = 0x00010000;
 
+    public const int WM_SIZE = 0x0005;
     public const int WM_SIZING = 0x0214;
+    public const int WM_ENTERSIZEMOVE = 0x0231;
     public const int WM_EXITSIZEMOVE = 0x0232;
     public const int WM_SYSCOMMAND = 0x0112;
+    public const int SIZE_RESTORED = 0;
+    public const int SIZE_MAXIMIZED = 2;
     public const int VK_SHIFT = 0x10;
     public const int SW_SHOW = 5;
 

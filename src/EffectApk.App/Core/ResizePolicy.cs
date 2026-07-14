@@ -14,8 +14,19 @@ public static class ResizePolicy
     public static (int Width, int Height) ComputeAndroidResolution(int clientWidthPx, int clientHeightPx)
     {
         var scale = Math.Min(1.0, 1920.0 / Math.Max(clientWidthPx, clientHeightPx));
-        var width = Math.Max(320, (int)(clientWidthPx * scale) & ~15);
-        var height = Math.Max(320, (int)(clientHeightPx * scale) & ~15);
+        var width = Math.Max(320, (int)(clientWidthPx * scale) & ~7);
+        var height = Math.Max(320, (int)(clientHeightPx * scale) & ~7);
         return (width, height);
+    }
+
+    /// <summary>
+    /// Плотность, при которой масштаб UI постоянен: пропорциональна короткой стороне
+    /// с опорой на «эталонный телефон» 1080 px / 320 dpi. Ширина в dp тогда всегда ~540:
+    /// раскладка приложения не зависит от размера окна, а рендер идёт 1:1 к его пикселям.
+    /// </summary>
+    public static int ComputeDensity(int width, int height)
+    {
+        var shortSide = Math.Min(width, height);
+        return Math.Clamp((int)Math.Round(320.0 * shortSide / 1080), 120, 640);
     }
 }

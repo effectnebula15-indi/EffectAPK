@@ -79,6 +79,16 @@ public sealed class AdbService(string adbPath, string serial)
             Logger.Error($"wm size {width}x{height} -d {displayId} не удался: {result.StdErr} {result.StdOut}");
     }
 
+    /// <summary>Меняет плотность (dpi) логического дисплея — вместе с wm size даёт постоянный масштаб UI.</summary>
+    public async Task SetDisplayDensityAsync(int displayId, int density)
+    {
+        var result = await DeviceAsync($"shell wm density {density} -d {displayId}");
+        if (result.Ok)
+            Logger.Info($"Дисплей {displayId}: плотность {density} dpi");
+        else
+            Logger.Error($"wm density {density} -d {displayId} не удался: {result.StdErr} {result.StdOut}");
+    }
+
     /// <summary>
     /// Ищет id виртуального дисплея, созданного scrcpy, в выводе dumpsys display.
     /// Эвристика: в блоке логического дисплея строка mDisplayId=N встречается раньше упоминания «scrcpy».
