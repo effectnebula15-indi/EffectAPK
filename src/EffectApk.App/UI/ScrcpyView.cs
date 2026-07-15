@@ -73,22 +73,20 @@ public sealed class ScrcpyView : Grid
     private void RenderLatestFrame()
     {
         Interlocked.Exchange(ref _renderPending, 0);
-        var output = _client.Decoder.Output;
-        lock (output.Gate)
+        var decoder = _client.Decoder;
+        var width = decoder.Width;
+        var height = decoder.Height;
+        if (width <= 0 || height <= 0) return;
+
+        if (_bitmap == null || _bitmap.PixelWidth != width || _bitmap.PixelHeight != height)
         {
-            if (!output.HasFrame) return;
-
-            if (_bitmap == null || _bitmap.PixelWidth != output.Width || _bitmap.PixelHeight != output.Height)
-            {
-                _bitmap = new WriteableBitmap(output.Width, output.Height, 96, 96, PixelFormats.Bgra32, null);
-                _image.Source = _bitmap;
-                Logger.Info($"Рендер: пересоздан буфер {output.Width}x{output.Height}");
-            }
-
-            _bitmap.WritePixels(
-                new Int32Rect(0, 0, output.Width, output.Height),
-                output.Pixels, output.Width * 4, 0);
+            _bitmap = new WriteableBitmap(width, height, 96, 96, PixelFormats.Bgra32, null);
+            _image.Source = _bitmap;
+            Logger.Info($"Рендер: пересоздан буфер {width}x{height}");
         }
+
+        // Декодер конвертирует YUV прямо в back-buffer — промежуточных копий нет
+        decoder.RenderTo(_bitmap);
     }
 
     // ---------- Ввод ----------

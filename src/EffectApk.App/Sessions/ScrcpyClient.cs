@@ -37,7 +37,11 @@ public sealed class ScrcpyClient : IDisposable
     public VideoDecoder Decoder { get; private set; } = null!;
     public int? DisplayId { get; private set; }
 
-    /// <summary>Текущий размер видеопотока — система координат для touch/scroll-сообщений.</summary>
+    /// <summary>
+    /// Текущий размер видеопотока — обязательная система координат для touch/scroll:
+    /// сервер ОТБРАСЫВАЕТ событие, если screen_size в сообщении не равен его videoSize
+    /// (защита от координат, посчитанных до поворота/ресайза).
+    /// </summary>
     public int VideoWidth { get; private set; }
     public int VideoHeight { get; private set; }
 
@@ -84,7 +88,7 @@ public sealed class ScrcpyClient : IDisposable
             "CLASSPATH=/data/local/tmp/scrcpy-server.jar app_process / com.genymobile.scrcpy.Server " +
             RuntimeBootstrapper.ScrcpyVersion +
             $" scid={scid} log_level=info" +
-            " video=true video_codec=h264 video_bit_rate=8000000 max_size=0" +
+            " video=true video_codec=h264 video_bit_rate=8000000 max_size=0 max_fps=60" +
             " audio=true audio_codec=raw" +
             " control=true tunnel_forward=true cleanup=true" +
             " send_device_meta=false send_frame_meta=true send_codec_meta=true send_dummy_byte=true" +

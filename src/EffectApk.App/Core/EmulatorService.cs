@@ -8,8 +8,22 @@ namespace EffectApk.Core;
 /// </summary>
 public sealed class EmulatorService(AppSettings settings)
 {
+    private const string FallbackGpuMode = "swiftshader_indirect";
+
     private Process? _emulatorProcess;
     private readonly SemaphoreSlim _gate = new(1, 1);
+
+    private void Launch(string gpuMode)
+    {
+        var emulatorExe = settings.EmulatorPath
+            ?? throw new InvalidOperationException("Android Emulator не найден — запустите мастер настройки.");
+
+        // Без -no-snapshot-save: quick-boot снапшоты делают повторные старты почти мгновенными
+        var args = $"-avd {settings.AvdName} -port {settings.EmulatorPort} " +
+                   $"-no-window -no-boot-anim -gpu {gpuMode}";
+        Logger.Info("Запуск эмулятора: emulator " + args);
+        _emulatorProcess = ProcessRunner.StartDetached(emulatorExe, args, line => Logger.Debug("[emu] " + line));
+    }
 
     public AdbService CreateAdb() => new(
         settings.AdbPath ?? throw new InvalidOperationException("adb не найден — запустите мастер настройки."),
@@ -29,18 +43,30 @@ public sealed class EmulatorService(AppSettings settings)
 
             if (_emulatorProcess is not { HasExited: false } && !await adb.IsDeviceOnlineAsync())
             {
-                var emulatorExe = settings.EmulatorPath
-                    ?? throw new InvalidOperationException("Android Emulator не найден — запустите мастер настройки.");
+                Launch(settings.GpuMode);
 
-                // Без -no-snapshot-save: quick-boot снапшоты делают повторные старты почти мгновенными
-                var args = $"-avd {settings.AvdName} -port {settings.EmulatorPort} " +
-                           $"-no-window -no-boot-anim -gpu {settings.GpuMode}";
-                Logger.Info("Запуск эмулятора: emulator " + args);
-                _emulatorProcess = ProcessRunner.StartDetached(emulatorExe, args, line => Logger.Debug("[emu] " + line));
+                try
+                {
+                    await adb.WaitForBootAsync(TimeSpan.FromMinutes(4), ct);
+                }
+                catch (TimeoutException) when (settings.GpuMode != FallbackGpuMode)
+                {
+                    // Аппаратный GPU не завёлся (нет драйверов / удалённая сессия) — откатываемся
+                    // на софтверный рендеринг: медленно, но работает везде
+                    Logger.Error($"Эмулятор не загрузился с -gpu {settings.GpuMode}; откат на {FallbackGpuMode}");
+                    await StopAsync();
+                    settings.GpuMode = FallbackGpuMode;
+                    settings.Save();
+                    Launch(settings.GpuMode);
+                    await adb.WaitForBootAsync(TimeSpan.FromMinutes(4), ct);
+                }
+            }
+            else
+            {
+                await adb.WaitForBootAsync(TimeSpan.FromMinutes(4), ct);
             }
 
-            await adb.WaitForBootAsync(TimeSpan.FromMinutes(4), ct);
-            Logger.Info("Эмулятор загружен: " + settings.EmulatorSerial);
+            Logger.Info($"Эмулятор загружен: {settings.EmulatorSerial} (-gpu {settings.GpuMode})");
             return adb;
         }
         finally
