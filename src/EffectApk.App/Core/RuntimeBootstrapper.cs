@@ -16,7 +16,9 @@ public sealed class RuntimeBootstrapper(AppSettings settings)
 {
     // Закреплённые версии — обновляются вручную при выходе новых релизов.
     private const string CmdlineToolsUrl = "https://dl.google.com/android/repository/commandlinetools-win-11076708_latest.zip";
-    private const string ScrcpyVersion = "3.3.1";
+
+    /// <summary>Версия scrcpy: её же передаём scrcpy-server при запуске (сервер сверяет строго).</summary>
+    public const string ScrcpyVersion = "3.3.1";
     private static string ScrcpyUrl => $"https://github.com/Genymobile/scrcpy/releases/download/v{ScrcpyVersion}/scrcpy-win64-v{ScrcpyVersion}.zip";
 
     // AOSP-образ: без Google Play и GMS — магазина приложений не будет по построению

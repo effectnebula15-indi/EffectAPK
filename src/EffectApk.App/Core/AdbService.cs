@@ -79,6 +79,16 @@ public sealed class AdbService(string adbPath, string serial)
             Logger.Error($"wm size {width}x{height} -d {displayId} не удался: {result.StdErr} {result.StdOut}");
     }
 
+    /// <summary>Меняет плотность (dpi) логического дисплея — вместе с wm size даёт постоянный масштаб UI.</summary>
+    public async Task SetDisplayDensityAsync(int displayId, int density)
+    {
+        var result = await DeviceAsync($"shell wm density {density} -d {displayId}");
+        if (result.Ok)
+            Logger.Info($"Дисплей {displayId}: плотность {density} dpi");
+        else
+            Logger.Error($"wm density {density} -d {displayId} не удался: {result.StdErr} {result.StdOut}");
+    }
+
     /// <summary>
     /// Ищет id виртуального дисплея, созданного scrcpy, в выводе dumpsys display.
     /// Эвристика: в блоке логического дисплея строка mDisplayId=N встречается раньше упоминания «scrcpy».
@@ -101,4 +111,59 @@ public sealed class AdbService(string adbPath, string serial)
     }
 
     public Task KillEmulatorAsync() => DeviceAsync("emu kill", TimeSpan.FromSeconds(15));
+
+    public async Task<bool> IsPackageRunningAsync(string packageName)
+    {
+        var result = await DeviceAsync($"shell pidof {packageName}", TimeSpan.FromSeconds(10));
+        return result.Ok && result.StdOut.Trim().Length > 0;
+    }
+
+    /// <summary>Компонент launcher-activity пакета (package/activity) или null.</summary>
+    public async Task<string?> ResolveLauncherActivityAsync(string packageName)
+    {
+        var result = await DeviceAsync(
+            $"shell cmd package resolve-activity --brief -c android.intent.category.LAUNCHER {packageName}");
+        return result.StdOut
+            .Split('\n')
+            .Select(line => line.Trim())
+            .LastOrDefault(line => line.Contains('/'));
+    }
+
+    /// <summary>
+    /// Страховочный запуск приложения на конкретном дисплее: start_app у scrcpy-server
+    /// может не сработать сразу после холодной загрузки эмулятора.
+    /// </summary>
+    public async Task StartAppOnDisplayAsync(string packageName, int displayId)
+    {
+        var component = await ResolveLauncherActivityAsync(packageName);
+        if (component == null)
+        {
+            Logger.Error($"Не удалось определить launcher-activity для {packageName}");
+            return;
+        }
+        var result = await DeviceAsync($"shell am start --display {displayId} -n {component}");
+        Logger.Info($"am start {component} на дисплее {displayId}: {(result.Ok ? "ok" : result.StdErr + result.StdOut)}");
+    }
+
+    public async Task PushAsync(string localPath, string remotePath)
+    {
+        var result = await DeviceAsync($"push \"{localPath}\" {remotePath}", TimeSpan.FromSeconds(60));
+        if (!result.Ok)
+            throw new InvalidOperationException($"adb push не удался:\n{result.StdErr}{result.StdOut}");
+    }
+
+    /// <summary>Пробрасывает локальный TCP-порт на сокет устройства (например, localabstract:scrcpy_xxx).</summary>
+    public async Task ForwardAsync(int localPort, string remoteSocket)
+    {
+        var result = await DeviceAsync($"forward tcp:{localPort} {remoteSocket}");
+        if (!result.Ok)
+            throw new InvalidOperationException($"adb forward не удался:\n{result.StdErr}{result.StdOut}");
+    }
+
+    public Task RemoveForwardAsync(int localPort) =>
+        DeviceAsync($"forward --remove tcp:{localPort}");
+
+    /// <summary>Долгоживущая команда adb shell (например, scrcpy-server через app_process).</summary>
+    public System.Diagnostics.Process StartShellDetached(string remoteCommand, Action<string>? onOutputLine = null) =>
+        ProcessRunner.StartDetached(adbPath, $"-s {serial} shell {remoteCommand}", onOutputLine);
 }

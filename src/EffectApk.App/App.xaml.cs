@@ -162,22 +162,47 @@ public partial class App : Application
         if (installedVersion != apk.VersionCode)
             await adb.InstallAsync(path);
 
-        var scrcpy = await ScrcpySession.StartAsync(_settings, apk.PackageName, adb, _cts.Token);
+        // «Запоминание»: восстанавливаем разрешение дисплея и геометрию окна прошлого запуска
+        _settings.Windows.TryGetValue(apk.PackageName, out var saved);
+        var displayWidth = saved?.DisplayWidth > 0 ? saved.DisplayWidth : _settings.DisplayWidth;
+        var displayHeight = saved?.DisplayHeight > 0 ? saved.DisplayHeight : _settings.DisplayHeight;
+        var restored = saved is { WindowWidth: > 100, WindowHeight: > 100 }
+            ? new WindowSnapshot(displayWidth, displayHeight,
+                saved.WindowLeft, saved.WindowTop, saved.WindowWidth, saved.WindowHeight)
+            : null;
+
+        var scrcpy = await ScrcpyClient.StartAsync(_settings, apk.PackageName, adb, displayWidth, displayHeight, _cts.Token);
 
         var window = new AppHostWindow(
             title: apk.Label,
             icon: ApkInspector.TryExtractIcon(apk),
-            scrcpyHwnd: scrcpy.WindowHandle,
-            aspect: (double)_settings.DisplayWidth / _settings.DisplayHeight,
-            applyResolutionAsync: async (clientW, clientH) =>
+            client: scrcpy,
+            displayWidth: displayWidth,
+            displayHeight: displayHeight,
+            restoredState: restored,
+            applyResolutionAsync: async (width, height, density) =>
             {
                 if (scrcpy.DisplayId is not { } displayId) return;
-                var (width, height) = ResizePolicy.ComputeAndroidResolution(clientW, clientH);
                 await adb.SetDisplaySizeAsync(displayId, width, height);
+                await adb.SetDisplayDensityAsync(displayId, density);
+                // Смена конфигурации дисплея выкидывает приложение на лаунчер вторичного
+                // дисплея — возвращаем его на передний план (am start на живую активность
+                // просто выводит её вперёд, без пересоздания).
+                await adb.StartAppOnDisplayAsync(apk.PackageName, displayId);
             },
-            onClosedAsync: async () =>
+            onClosedAsync: async snapshot =>
             {
                 _sessions.Remove(apk.PackageName);
+                _settings.Windows[apk.PackageName] = new PackageWindowState
+                {
+                    DisplayWidth = snapshot.DisplayWidth,
+                    DisplayHeight = snapshot.DisplayHeight,
+                    WindowLeft = snapshot.Left,
+                    WindowTop = snapshot.Top,
+                    WindowWidth = snapshot.Width,
+                    WindowHeight = snapshot.Height,
+                };
+                _settings.Save();
                 scrcpy.Stop();
                 try { await adb.ForceStopAsync(apk.PackageName); }
                 catch (Exception ex) { Logger.Error("force-stop не удался", ex); }
@@ -194,6 +219,26 @@ public partial class App : Application
 
         window.Show();
         window.Activate();
+
+        // Один раз подгоняем разрешение дисплея под фактические пиксели окна (окно могло
+        // восстановиться в размере, отличном от стартового new_display) — только если
+        // размер реально отличается, иначе лишний раз не тревожим приложение.
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(1200, _cts.Token);
+                if (scrcpy.HasExited) return;
+                await window.Dispatcher.InvokeAsync(() => _ = window.SyncResolutionToWindowIfNeededAsync());
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Пост-стартовая синхронизация не удалась", ex);
+            }
+        });
     }
 
     private async Task StopRuntimeAsync()

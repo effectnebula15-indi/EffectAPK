@@ -4,6 +4,17 @@ using System.Text.Json.Serialization;
 
 namespace EffectApk.Core;
 
+/// <summary>Сохранённое состояние одного приложения: разрешение Android-дисплея и геометрия окна (DIP).</summary>
+public sealed class PackageWindowState
+{
+    public int DisplayWidth { get; set; }
+    public int DisplayHeight { get; set; }
+    public double WindowLeft { get; set; }
+    public double WindowTop { get; set; }
+    public double WindowWidth { get; set; }
+    public double WindowHeight { get; set; }
+}
+
 public sealed class AppSettings
 {
     public static string RootDir { get; } = Path.Combine(
@@ -30,6 +41,9 @@ public sealed class AppSettings
 
     /// <summary>Автозагрузка уже настраивалась (по умолчанию включается один раз; дальше решает пользователь через трей).</summary>
     public bool AutoStartConfigured { get; set; }
+
+    /// <summary>Запомненная геометрия окна и разрешение дисплея для каждого пакета (ключ — имя пакета).</summary>
+    public Dictionary<string, PackageWindowState> Windows { get; set; } = new();
 
     [JsonIgnore] public string EmulatorSerial => $"emulator-{EmulatorPort}";
     [JsonIgnore] public string? AdbPath => SdkFile("platform-tools", "adb.exe");

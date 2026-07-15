@@ -13,13 +13,23 @@
     <PlatformTarget>x64</PlatformTarget>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\EffectApk.ico</ApplicationIcon>
-    <Version>0.2.0</Version>
-    <Description>EffectAPK — открывает .apk-файлы в нативном resizable-окне Windows через headless Android-эмулятор и scrcpy.</Description>
+    <!-- Собственный видеодекодер использует указатели (FFmpeg + YUV→BGRA) -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Version>0.3.0</Version>
+    <Description>EffectAPK — открывает .apk-файлы в нативном resizable-окне Windows через headless Android-эмулятор и собственный клиент протокола scrcpy.</Description>
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- WinForms подключён только ради NotifyIcon; его глобальный using конфликтует с WPF (Application, MessageBox) -->
+    <!-- WinForms подключён только ради NotifyIcon; его глобальные using конфликтуют с WPF (Application, Image, Point) -->
     <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Биндинги к FFmpeg 7.x (avcodec-61.dll и др. берутся из дистрибутива scrcpy) -->
+    <PackageReference Include="FFmpeg.AutoGen" Version="7.0.0" />
+    <!-- Воспроизведение raw-PCM аудиопотока scrcpy -->
+    <PackageReference Include="NAudio" Version="2.2.1" />
   </ItemGroup>
 
 </Project>
