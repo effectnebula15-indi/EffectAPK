@@ -157,15 +157,22 @@ public partial class App : Application
         _tray?.Balloon($"Запуск «{apk.Label}»… Холодный старт эмулятора может занять до минуты.");
         var adb = await _emulator.EnsureRunningAsync(_cts.Token);
 
-        // Установка только если versionCode изменился (или пакета ещё нет)
+        // Ставим только новое: та же версия — уже установлена, более старая — Android
+        // отвергнет установку (INSTALL_FAILED_VERSION_DOWNGRADE), поэтому просто запускаем
+        // то, что есть на устройстве (приложение могло обновить само себя).
         var installedVersion = await adb.GetInstalledVersionCodeAsync(apk.PackageName);
-        if (installedVersion != apk.VersionCode)
+        if (installedVersion == null || installedVersion < apk.VersionCode)
             await adb.InstallAsync(path);
+        else if (installedVersion > apk.VersionCode)
+            Logger.Info($"{apk.PackageName}: на устройстве более новая версия " +
+                        $"({installedVersion} > {apk.VersionCode}) — запускаю установленную");
 
-        // «Запоминание»: восстанавливаем разрешение дисплея и геометрию окна прошлого запуска
+        // «Запоминание»: восстанавливаем разрешение дисплея и геометрию окна прошлого запуска;
+        // по умолчанию — «размер телефона», вписанный в рабочую область экрана
         _settings.Windows.TryGetValue(apk.PackageName, out var saved);
-        var displayWidth = saved?.DisplayWidth > 0 ? saved.DisplayWidth : _settings.DisplayWidth;
-        var displayHeight = saved?.DisplayHeight > 0 ? saved.DisplayHeight : _settings.DisplayHeight;
+        var (displayWidth, displayHeight) = saved is { DisplayWidth: > 0, DisplayHeight: > 0 }
+            ? (saved.DisplayWidth, saved.DisplayHeight)
+            : DefaultDisplaySize();
         var restored = saved is { WindowWidth: > 100, WindowHeight: > 100 }
             ? new WindowSnapshot(displayWidth, displayHeight,
                 saved.WindowLeft, saved.WindowTop, saved.WindowWidth, saved.WindowHeight)
@@ -239,6 +246,30 @@ public partial class App : Application
                 Logger.Error("Пост-стартовая синхронизация не удалась", ex);
             }
         });
+    }
+
+    /// <summary>
+    /// «Обычный размер» окна — телефон: пропорции стартового разрешения из настроек
+    /// (1080x1920), вписанные в рабочую область основного монитора с запасом на рамки
+    /// окна. На большом мониторе это ровно 1080x1920 (1:1), на меньших — уменьшенная
+    /// копия с теми же пропорциями; стороны на «сетке дисплея» (кратно 8).
+    /// </summary>
+    private (int Width, int Height) DefaultDisplaySize()
+    {
+        var work = new Interop.NativeMethods.RECT();
+        Interop.NativeMethods.SystemParametersInfo(Interop.NativeMethods.SPI_GETWORKAREA, 0, ref work, 0);
+        var maxW = Math.Max(ResizePolicy.MinSide, work.Width - 32);
+        var maxH = Math.Max(ResizePolicy.MinSide, work.Height - 72);
+
+        var aspect = (double)_settings.DisplayWidth / _settings.DisplayHeight;
+        var height = Math.Min(_settings.DisplayHeight, maxH);
+        var width = (int)Math.Round(height * aspect);
+        if (width > maxW)
+        {
+            width = maxW;
+            height = (int)Math.Round(width / aspect);
+        }
+        return (ResizePolicy.SnapWindowSide(width), ResizePolicy.SnapWindowSide(height));
     }
 
     private async Task StopRuntimeAsync()

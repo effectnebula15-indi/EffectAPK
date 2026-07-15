@@ -34,8 +34,12 @@ public sealed class AppSettings
     public int DisplayHeight { get; set; } = 1920;
     public int DisplayDpi { get; set; } = 320;
 
-    /// <summary>-gpu режим эмулятора: auto | host | swiftshader_indirect (последний — софтверный, самый совместимый).</summary>
-    public string GpuMode { get; set; } = "auto";
+    /// <summary>
+    /// -gpu режим эмулятора: host (аппаратный) | swiftshader_indirect (софтверный, совместимый).
+    /// ВАЖНО: «auto» вместе с -no-window выбирает SwiftShader, то есть рендерит весь Android
+    /// UI на CPU — картинка ощутимо лагает. Поэтому по умолчанию host, с автооткатом.
+    /// </summary>
+    public string GpuMode { get; set; } = "host";
 
     public bool SetupCompleted { get; set; }
 
@@ -91,7 +95,17 @@ public sealed class AppSettings
         try
         {
             if (File.Exists(FilePath))
-                return JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath)) ?? new AppSettings();
+            {
+                var loaded = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath)) ?? new AppSettings();
+                // Миграция: «auto» в headless-режиме означал софтверный рендеринг (лаги)
+                if (loaded.GpuMode is "auto")
+                {
+                    loaded.GpuMode = "host";
+                    loaded.Save();
+                    Logger.Info("Настройки: GPU-режим переключён с auto на host");
+                }
+                return loaded;
+            }
         }
         catch (Exception ex)
         {
