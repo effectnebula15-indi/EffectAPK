@@ -33,7 +33,7 @@ public sealed class ScrcpyView : Grid
         [Key.Down] = 20,
     };
 
-    private readonly ScrcpyClient _client;
+    private ScrcpyClient _client;
     private readonly Image _image;
     private WriteableBitmap? _bitmap;
     private int _renderPending;
@@ -59,6 +59,17 @@ public sealed class ScrcpyView : Grid
         PreviewKeyDown += (_, e) => OnKey(e, down: true);
         PreviewKeyUp += (_, e) => OnKey(e, down: false);
         PreviewTextInput += OnTextInput;
+    }
+
+    /// <summary>
+    /// Переключает view на новую scrcpy-сессию (смена разрешения = новый дисплей и клиент).
+    /// Вызывается на UI-потоке; старый декодер уже ничего не пришлёт после Dispose.
+    /// </summary>
+    public void SetClient(ScrcpyClient client)
+    {
+        _client.Decoder.FrameReady -= OnFrameReady;
+        _client = client;
+        _client.Decoder.FrameReady += OnFrameReady;
     }
 
     // ---------- Рендер ----------

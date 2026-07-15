@@ -24,8 +24,8 @@ public sealed record WindowSnapshot(
 public partial class AppHostWindow : Window
 {
     private readonly ScrcpyView _view;
-    private readonly Sessions.ScrcpyClient _client;
-    private readonly Func<int, int, int, Task> _applyResolutionAsync; // (ширина, высота, плотность dpi)
+    private Sessions.ScrcpyClient _client;
+    private readonly Func<int, int, Task> _applyResolutionAsync; // (ширина, высота) в пикселях
     private readonly bool _restoredGeometry;
     private readonly DispatcherTimer _syncDebounce;
     private int _displayWidth;
@@ -33,6 +33,8 @@ public partial class AppHostWindow : Window
     private double _aspect;
     private bool _inSizeMove;
     private bool _syncing;
+    private bool _resyncPending;
+    private (int W, int H) _lastSizingLogged;
 
     public AppHostWindow(
         string title,
@@ -41,7 +43,7 @@ public partial class AppHostWindow : Window
         int displayWidth,
         int displayHeight,
         WindowSnapshot? restoredState,
-        Func<int, int, int, Task> applyResolutionAsync,
+        Func<int, int, Task> applyResolutionAsync,
         Func<WindowSnapshot, Task> onClosedAsync)
     {
         InitializeComponent();
@@ -90,6 +92,13 @@ public partial class AppHostWindow : Window
                     (restoredState != null ? " (геометрия восстановлена)" : ""));
     }
 
+    /// <summary>Переключает окно на новую scrcpy-сессию (смена разрешения = новый дисплей).</summary>
+    public void SwapClient(Sessions.ScrcpyClient client)
+    {
+        _client = client;
+        _view.SetClient(client);
+    }
+
     private WindowSnapshot Snapshot()
     {
         var bounds = WindowState == WindowState.Normal
@@ -118,7 +127,11 @@ public partial class AppHostWindow : Window
     /// дисплея и вписанный в рабочую область монитора) — единственный способ гарантировать
     /// совпадение с дисплеем: DIP-свойства Width/Height округляются при пересчёте в пиксели.
     /// </summary>
-    private void MoveWindowToClientSize(IntPtr hwnd, int clientW, int clientH, bool center)
+    /// <summary>
+    /// Вписывает желаемый размер клиентской области в рабочую область монитора
+    /// (пропорционально) и приводит к сетке дисплея (кратно 8, минимум 320).
+    /// </summary>
+    private (int W, int H) FitClientToWorkArea(IntPtr hwnd, int clientW, int clientH)
     {
         GetWindowRect(hwnd, out var windowRect);
         GetClientRect(hwnd, out var clientRect);
@@ -126,15 +139,25 @@ public partial class AppHostWindow : Window
         var chromeH = windowRect.Height - clientRect.Height;
         var work = GetWorkAreaPx(hwnd);
 
-        // Не влезает на монитор — уменьшаем с сохранением пропорций (дисплей догонит по WM_SIZE)
         var maxClientW = Math.Max(ResizePolicy.MinSide, work.Width - chromeW);
         var maxClientH = Math.Max(ResizePolicy.MinSide, work.Height - chromeH);
         if (clientW > maxClientW || clientH > maxClientH)
         {
             var fit = Math.Min((double)maxClientW / clientW, (double)maxClientH / clientH);
-            clientW = ResizePolicy.SnapWindowSide(clientW * fit);
-            clientH = ResizePolicy.SnapWindowSide(clientH * fit);
+            clientW = (int)Math.Round(clientW * fit);
+            clientH = (int)Math.Round(clientH * fit);
         }
+        return (ResizePolicy.SnapWindowSide(clientW), ResizePolicy.SnapWindowSide(clientH));
+    }
+
+    private void MoveWindowToClientSize(IntPtr hwnd, int clientW, int clientH, bool center)
+    {
+        (clientW, clientH) = FitClientToWorkArea(hwnd, clientW, clientH);
+        GetWindowRect(hwnd, out var windowRect);
+        GetClientRect(hwnd, out var clientRect);
+        var chromeW = windowRect.Width - clientRect.Width;
+        var chromeH = windowRect.Height - clientRect.Height;
+        var work = GetWorkAreaPx(hwnd);
 
         var w = clientW + chromeW;
         var h = clientH + chromeH;
@@ -186,24 +209,53 @@ public partial class AppHostWindow : Window
     /// </summary>
     public async Task SyncResolutionToWindowAsync(bool force = false)
     {
-        if (_syncing) return;
+        if (_syncing)
+        {
+            // Свап сессии уже идёт — запоминаем, что размер изменился, и доигрываем после
+            _resyncPending = true;
+            return;
+        }
         var hwnd = new WindowInteropHelper(this).Handle;
         if (hwnd == IntPtr.Zero) return;
-
-        GetClientRect(hwnd, out var client);
-        if (client.Width < 50 || client.Height < 50) return;
-
-        var (width, height) = ResizePolicy.ComputeAndroidResolution(client.Width, client.Height);
-        if (!force && width == _displayWidth && height == _displayHeight) return;
 
         _syncing = true;
         try
         {
-            var density = ResizePolicy.ComputeDensity(width, height);
-            Logger.Info($"Синхронизация: окно {client.Width}x{client.Height} → дисплей {width}x{height} @ {density} dpi");
-            await _applyResolutionAsync(width, height, density);
-            (_displayWidth, _displayHeight) = (width, height);
-            _aspect = (double)width / height;
+            while (true)
+            {
+                _resyncPending = false;
+
+                GetClientRect(hwnd, out var client);
+                if (client.Width < 50 || client.Height < 50) return;
+
+                var (width, height) = ResizePolicy.ComputeAndroidResolution(client.Width, client.Height);
+                // Обычное окно не должно вылезать за рабочую область: целевой размер сразу
+                // вписываем, иначе доснап окна уменьшит его и потребуется второй свап сессии
+                if (WindowState == WindowState.Normal)
+                    (width, height) = FitClientToWorkArea(hwnd, width, height);
+
+                if (!force && width == _displayWidth && height == _displayHeight) return;
+                force = false;
+
+                Logger.Info($"Синхронизация: окно {client.Width}x{client.Height} → дисплей {width}x{height} " +
+                            $"@ {ResizePolicy.ComputeDensity(width, height)} dpi (новая сессия)");
+                await _applyResolutionAsync(width, height);
+                (_displayWidth, _displayHeight) = (width, height);
+                _aspect = (double)width / height;
+
+                // Окно могли ресайзнуть в обход WM_SIZING (Aero Snap, Win+стрелки, внешний
+                // SetWindowPos) — тогда клиент не на сетке. Доснапываем окно к дисплею,
+                // чтобы совпадение осталось строго 1:1 (максимизацию не трогаем).
+                if (WindowState == WindowState.Normal &&
+                    (client.Width != width || client.Height != height))
+                {
+                    Logger.Info($"Окно доснапнуто к сетке: клиент {client.Width}x{client.Height} → {width}x{height}");
+                    MoveWindowToClientSize(hwnd, width, height, center: false);
+                }
+
+                if (!_resyncPending) return;
+                Logger.Info("Во время свапа размер окна успел измениться — синхронизируем ещё раз");
+            }
         }
         catch (Exception ex)
         {
@@ -240,6 +292,8 @@ public partial class AppHostWindow : Window
 
             case WM_EXITSIZEMOVE:
                 _inSizeMove = false;
+                GetClientRect(hwnd, out var exitClient);
+                Logger.Debug($"drag завершён: клиент {exitClient.Width}x{exitClient.Height}");
                 _ = SyncResolutionToWindowAsync();
                 break;
 
@@ -284,30 +338,48 @@ public partial class AppHostWindow : Window
         var clientW = Math.Max(1, rect.Width - chromeW);
         var clientH = Math.Max(1, rect.Height - chromeH);
 
+        // Пределы рабочей области (на сетке): если наш снап превысит системный maxTrackSize,
+        // ОС обрежет окно ПОСЛЕ WM_SIZING и клиент сойдёт с сетки — клампим сами, с пропорциями
+        var work = GetWorkAreaPx(hwnd);
+        var maxW = Math.Max(ResizePolicy.MinSide, (work.Width - chromeW) / 8 * 8);
+        var maxH = Math.Max(ResizePolicy.MinSide, (work.Height - chromeH) / 8 * 8);
+
         int snappedW, snappedH;
         if (keepAspect)
         {
             // За верх/низ ведём по высоте, иначе по ширине; вторую сторону считаем от уже
-            // снапнутой ведущей — если минимум зажал результат, пересчитываем обратно
+            // снапнутой ведущей — если предел зажал ведомую, пересчитываем ведущую обратно
             if (edge is WMSZ_TOP or WMSZ_BOTTOM)
             {
-                snappedH = ResizePolicy.SnapWindowSide(clientH);
+                snappedH = Math.Min(maxH, ResizePolicy.SnapWindowSide(clientH));
                 snappedW = ResizePolicy.SnapWindowSide(snappedH * _aspect);
-                if (snappedW == ResizePolicy.MinSide)
-                    snappedH = ResizePolicy.SnapWindowSide(snappedW / _aspect);
+                if (snappedW == ResizePolicy.MinSide || snappedW > maxW)
+                {
+                    snappedW = Math.Min(maxW, snappedW);
+                    snappedH = Math.Min(maxH, ResizePolicy.SnapWindowSide(snappedW / _aspect));
+                }
             }
             else
             {
-                snappedW = ResizePolicy.SnapWindowSide(clientW);
+                snappedW = Math.Min(maxW, ResizePolicy.SnapWindowSide(clientW));
                 snappedH = ResizePolicy.SnapWindowSide(snappedW / _aspect);
-                if (snappedH == ResizePolicy.MinSide)
-                    snappedW = ResizePolicy.SnapWindowSide(snappedH * _aspect);
+                if (snappedH == ResizePolicy.MinSide || snappedH > maxH)
+                {
+                    snappedH = Math.Min(maxH, snappedH);
+                    snappedW = Math.Min(maxW, ResizePolicy.SnapWindowSide(snappedH * _aspect));
+                }
             }
         }
         else
         {
-            snappedW = ResizePolicy.SnapWindowSide(clientW);
-            snappedH = ResizePolicy.SnapWindowSide(clientH);
+            snappedW = Math.Min(maxW, ResizePolicy.SnapWindowSide(clientW));
+            snappedH = Math.Min(maxH, ResizePolicy.SnapWindowSide(clientH));
+        }
+
+        if ((snappedW, snappedH) != _lastSizingLogged)
+        {
+            _lastSizingLogged = (snappedW, snappedH);
+            Logger.Debug($"WM_SIZING: {clientW}x{clientH} → {snappedW}x{snappedH} (edge={edge}, aspect={(keepAspect ? _aspect.ToString("f3") : "free")})");
         }
 
         var newW = snappedW + chromeW;

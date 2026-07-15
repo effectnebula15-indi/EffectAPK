@@ -95,8 +95,9 @@ public sealed class ScrcpyClient : IDisposable
             " clipboard_autosync=false" +
             // Плотность сразу правильная для этого размера — иначе при точном совпадении
             // окна с дисплеем пост-стартовая синхронизация не сработает и не поправит её
-            $" new_display={displayWidth}x{displayHeight}/{ResizePolicy.ComputeDensity(displayWidth, displayHeight)}" +
-            $" start_app={packageName}";
+            // Плотность сразу под размер (эталон 1080px/320dpi); приложение на дисплей
+            // выводит сам EffectAPK через am start --display (опции start_app у сервера 3.3.1 нет)
+            $" new_display={displayWidth}x{displayHeight}/{ResizePolicy.ComputeDensity(displayWidth, displayHeight)}";
 
         _serverProcess = _adb.StartShellDetached(serverCommand, line =>
         {

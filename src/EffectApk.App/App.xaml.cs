@@ -167,18 +167,16 @@ public partial class App : Application
             Logger.Info($"{apk.PackageName}: на устройстве более новая версия " +
                         $"({installedVersion} > {apk.VersionCode}) — запускаю установленную");
 
-        // «Запоминание»: восстанавливаем разрешение дисплея и геометрию окна прошлого запуска;
-        // по умолчанию — «размер телефона», вписанный в рабочую область экрана
-        _settings.Windows.TryGetValue(apk.PackageName, out var saved);
-        var (displayWidth, displayHeight) = saved is { DisplayWidth: > 0, DisplayHeight: > 0 }
-            ? (saved.DisplayWidth, saved.DisplayHeight)
-            : DefaultDisplaySize();
-        var restored = saved is { WindowWidth: > 100, WindowHeight: > 100 }
-            ? new WindowSnapshot(displayWidth, displayHeight,
-                saved.WindowLeft, saved.WindowTop, saved.WindowWidth, saved.WindowHeight)
-            : null;
+        // Окно всегда открывается «размером телефона»: пропорции 1080x1920 из настроек,
+        // вписанные в рабочую область экрана. Прошлая геометрия не восстанавливается
+        // (решение пользователя: обычный размер = размер окна телефона).
+        var (displayWidth, displayHeight) = DefaultDisplaySize();
+        WindowSnapshot? restored = null;
 
         var scrcpy = await ScrcpyClient.StartAsync(_settings, apk.PackageName, adb, displayWidth, displayHeight, _cts.Token);
+        await PrepareDisplayAsync(adb, apk.PackageName, scrcpy);
+
+        AppSession? session = null;
 
         var window = new AppHostWindow(
             title: apk.Label,
@@ -187,15 +185,10 @@ public partial class App : Application
             displayWidth: displayWidth,
             displayHeight: displayHeight,
             restoredState: restored,
-            applyResolutionAsync: async (width, height, density) =>
+            applyResolutionAsync: async (width, height) =>
             {
-                if (scrcpy.DisplayId is not { } displayId) return;
-                await adb.SetDisplaySizeAsync(displayId, width, height);
-                await adb.SetDisplayDensityAsync(displayId, density);
-                // Смена конфигурации дисплея выкидывает приложение на лаунчер вторичного
-                // дисплея — возвращаем его на передний план (am start на живую активность
-                // просто выводит её вперёд, без пересоздания).
-                await adb.StartAppOnDisplayAsync(apk.PackageName, displayId);
+                if (session != null)
+                    await SwapSessionAsync(session, adb, width, height);
             },
             onClosedAsync: async snapshot =>
             {
@@ -210,32 +203,26 @@ public partial class App : Application
                     WindowHeight = snapshot.Height,
                 };
                 _settings.Save();
-                scrcpy.Stop();
+                session?.Scrcpy.Stop();
                 try { await adb.ForceStopAsync(apk.PackageName); }
                 catch (Exception ex) { Logger.Error("force-stop не удался", ex); }
             });
 
-        _sessions[apk.PackageName] = new AppSession(apk, scrcpy, window);
-
-        // scrcpy умер (эмулятор остановлен, поток оборвался) — закрываем осиротевшее окно
-        scrcpy.Exited += () => Dispatcher.InvokeAsync(() =>
-        {
-            if (_sessions.TryGetValue(apk.PackageName, out var s) && s.Scrcpy == scrcpy)
-                s.Window.Close();
-        });
+        session = new AppSession(apk, scrcpy, window);
+        _sessions[apk.PackageName] = session;
+        HookSessionExited(session, scrcpy);
 
         window.Show();
         window.Activate();
 
-        // Один раз подгоняем разрешение дисплея под фактические пиксели окна (окно могло
-        // восстановиться в размере, отличном от стартового new_display) — только если
-        // размер реально отличается, иначе лишний раз не тревожим приложение.
+        // Один раз сверяем окно с фактическим видеопотоком (застарелый override, несовпадение
+        // стартового размера) — при расхождении пересоздаём сессию под пиксели окна.
         _ = Task.Run(async () =>
         {
             try
             {
-                await Task.Delay(1200, _cts.Token);
-                if (scrcpy.HasExited) return;
+                await Task.Delay(1500, _cts.Token);
+                if (session.Scrcpy.HasExited) return;
                 await window.Dispatcher.InvokeAsync(() => _ = window.SyncResolutionToWindowIfNeededAsync());
             }
             catch (OperationCanceledException)
@@ -245,6 +232,61 @@ public partial class App : Application
             {
                 Logger.Error("Пост-стартовая синхронизация не удалась", ex);
             }
+        });
+    }
+
+    /// <summary>
+    /// Готовит свежесозданный scrcpy-дисплей: сбрасывает реаттачнутый override прошлой
+    /// сессии (WindowManager хранит wm size по uniqueId) и выводит приложение на дисплей.
+    /// </summary>
+    private static async Task PrepareDisplayAsync(AdbService adb, string packageName, ScrcpyClient client)
+    {
+        if (client.DisplayId is not { } displayId)
+        {
+            Logger.Error("Дисплей scrcpy не определён — приложение не будет выведено на него");
+            return;
+        }
+        await adb.ResetDisplayAsync(displayId);
+        await adb.StartAppOnDisplayAsync(packageName, displayId);
+    }
+
+    /// <summary>
+    /// Смена разрешения = новая scrcpy-сессия. Виртуальный дисплей scrcpy 3.3 не умеет менять
+    /// размер поверхности на лету: wm size меняет только логический override, а кадры продолжают
+    /// идти со старой поверхности (контент со сдвигом/обрезкой, после нескольких смен — чёрный
+    /// экран). Поэтому создаём новый дисплей ровно нужного размера, переносим туда приложение
+    /// (am start --display: активность пересоздаётся с правильной вёрсткой, процесс и состояние
+    /// живы) и закрываем старую сессию.
+    /// </summary>
+    private async Task SwapSessionAsync(AppSession session, AdbService adb, int width, int height)
+    {
+        var old = session.Scrcpy;
+        var fresh = await ScrcpyClient.StartAsync(
+            _settings, session.Apk.PackageName, adb, width, height, _cts.Token);
+        try
+        {
+            await PrepareDisplayAsync(adb, session.Apk.PackageName, fresh);
+        }
+        catch
+        {
+            fresh.Dispose();
+            throw;
+        }
+
+        session.Scrcpy = fresh;
+        HookSessionExited(session, fresh);
+        await session.Window.Dispatcher.InvokeAsync(() => session.Window.SwapClient(fresh));
+        old.Stop();
+        Logger.Info($"Сессия пересоздана под дисплей {width}x{height} (displayId={fresh.DisplayId})");
+    }
+
+    /// <summary>scrcpy умер (эмулятор остановлен, поток оборвался) — закрываем осиротевшее окно.</summary>
+    private void HookSessionExited(AppSession session, ScrcpyClient client)
+    {
+        client.Exited += () => Dispatcher.InvokeAsync(() =>
+        {
+            if (_sessions.TryGetValue(session.Apk.PackageName, out var s) && s.Scrcpy == client)
+                s.Window.Close();
         });
     }
 

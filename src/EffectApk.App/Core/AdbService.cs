@@ -90,6 +90,18 @@ public sealed class AdbService(string adbPath, string serial)
     }
 
     /// <summary>
+    /// Сбрасывает wm size/density-override логического дисплея. WindowManager хранит
+    /// override по uniqueId дисплея, и «хвост» прошлой сессии реаттачится к свежесозданному
+    /// дисплею scrcpy — сбрасываем сразу после создания, чтобы логический размер совпадал с базовым.
+    /// </summary>
+    public async Task ResetDisplayAsync(int displayId)
+    {
+        await DeviceAsync($"shell wm size reset -d {displayId}");
+        await DeviceAsync($"shell wm density reset -d {displayId}");
+        Logger.Info($"Дисплей {displayId}: override размера и плотности сброшен");
+    }
+
+    /// <summary>
     /// Ищет id виртуального дисплея, созданного scrcpy, в выводе dumpsys display.
     /// Эвристика: в блоке логического дисплея строка mDisplayId=N встречается раньше упоминания «scrcpy».
     /// </summary>
