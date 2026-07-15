@@ -13,14 +13,17 @@ public static class ResizePolicy
     //   минимум 320 px (иначе многие приложения ломают вёрстку).
     public static (int Width, int Height) ComputeAndroidResolution(int clientWidthPx, int clientHeightPx)
     {
-        // Никакого округления: wm size принимает любые значения, а выравнивание под кодек
-        // (кратность 8) делает сам scrcpy-server. Любое наше округление приводило к дрейфу
-        // пропорций между окном и дисплеем — тонким чёрным полосам по краям.
+        // Размер дисплея ОБЯЗАН быть кратен 8: scrcpy-server выравнивает под кодек размер
+        // видеопотока (округляя к ближайшему кратному 8), а сам дисплей не трогает. Если
+        // задать дисплей 684x881, поток станет 688x880 — картинка дисплея кодируется со
+        // сдвигом/обрезкой, отчего контент «съезжает», а координаты касаний промахиваются.
+        // Кратный 8 дисплей делает поток тождественным дисплею.
         var scale = Math.Min(1.0, 1920.0 / Math.Max(clientWidthPx, clientHeightPx));
-        var width = Math.Max(320, (int)Math.Round(clientWidthPx * scale));
-        var height = Math.Max(320, (int)Math.Round(clientHeightPx * scale));
-        return (width, height);
+        return (Align8(clientWidthPx * scale), Align8(clientHeightPx * scale));
     }
+
+    private static int Align8(double value) =>
+        Math.Max(320, (int)Math.Round(value / 8.0) * 8);
 
     /// <summary>
     /// Плотность, при которой масштаб UI постоянен: пропорциональна короткой стороне

@@ -157,10 +157,15 @@ public partial class App : Application
         _tray?.Balloon($"Запуск «{apk.Label}»… Холодный старт эмулятора может занять до минуты.");
         var adb = await _emulator.EnsureRunningAsync(_cts.Token);
 
-        // Установка только если versionCode изменился (или пакета ещё нет)
+        // Ставим только новое: та же версия — уже установлена, более старая — Android
+        // отвергнет установку (INSTALL_FAILED_VERSION_DOWNGRADE), поэтому просто запускаем
+        // то, что есть на устройстве (приложение могло обновить само себя).
         var installedVersion = await adb.GetInstalledVersionCodeAsync(apk.PackageName);
-        if (installedVersion != apk.VersionCode)
+        if (installedVersion == null || installedVersion < apk.VersionCode)
             await adb.InstallAsync(path);
+        else if (installedVersion > apk.VersionCode)
+            Logger.Info($"{apk.PackageName}: на устройстве более новая версия " +
+                        $"({installedVersion} > {apk.VersionCode}) — запускаю установленную");
 
         // «Запоминание»: восстанавливаем разрешение дисплея и геометрию окна прошлого запуска
         _settings.Windows.TryGetValue(apk.PackageName, out var saved);
