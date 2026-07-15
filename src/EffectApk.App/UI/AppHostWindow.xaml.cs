@@ -22,7 +22,7 @@ public sealed record WindowSnapshot(
 /// </summary>
 public partial class AppHostWindow : Window
 {
-    private readonly ScrcpyHost _host;
+    private readonly ScrcpyView _view;
     private readonly Func<int, int, int, Task> _applyResolutionAsync; // (ширина, высота, плотность dpi)
     private readonly bool _restoredGeometry;
     private readonly DispatcherTimer _syncDebounce;
@@ -35,7 +35,7 @@ public partial class AppHostWindow : Window
     public AppHostWindow(
         string title,
         ImageSource? icon,
-        IntPtr scrcpyHwnd,
+        Sessions.ScrcpyClient client,
         int displayWidth,
         int displayHeight,
         WindowSnapshot? restoredState,
@@ -76,11 +76,11 @@ public partial class AppHostWindow : Window
             Width = Math.Max(MinWidth, Height * _aspect);
         }
 
-        _host = new ScrcpyHost(scrcpyHwnd);
-        Root.Children.Add(_host);
+        _view = new ScrcpyView(client);
+        Root.Children.Add(_view);
 
         SourceInitialized += OnSourceInitialized;
-        Activated += (_, _) => _host.FocusChild();
+        Activated += (_, _) => _view.Focus();
         Closed += async (_, _) =>
         {
             _syncDebounce.Stop();
@@ -124,9 +124,24 @@ public partial class AppHostWindow : Window
     }
 
     /// <summary>
+    /// Синхронизирует только если текущее разрешение дисплея заметно расходится с окном
+    /// (порог 2 px). Используется при старте: если окно восстановилось ровно в стартовом
+    /// размере дисплея — приложение не тревожим вовсе.
+    /// </summary>
+    public Task SyncResolutionToWindowIfNeededAsync()
+    {
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero) return Task.CompletedTask;
+        GetClientRect(hwnd, out var client);
+        var (width, height) = ResizePolicy.ComputeAndroidResolution(client.Width, client.Height);
+        if (Math.Abs(width - _displayWidth) <= 2 && Math.Abs(height - _displayHeight) <= 2)
+            return Task.CompletedTask;
+        return SyncResolutionToWindowAsync();
+    }
+
+    /// <summary>
     /// Приводит разрешение и плотность Android-дисплея к текущим пикселям клиентской области.
-    /// Вызывается после любого изменения размеров окна (и извне — после старта scrcpy,
-    /// который любит сам выставлять override-разрешение).
+    /// Вызывается после любого изменения размеров окна.
     /// </summary>
     public async Task SyncResolutionToWindowAsync()
     {
@@ -250,10 +265,10 @@ public partial class AppHostWindow : Window
             Logger.Info($"Поворот окна: {_displayWidth}x{_displayHeight} → {_displayHeight}x{_displayWidth}");
             _aspect = 1.0 / _aspect;
 
-            var chromeW = ActualWidth - _host.ActualWidth;
-            var chromeH = ActualHeight - _host.ActualHeight;
-            var newClientW = _host.ActualHeight;
-            var newClientH = _host.ActualWidth;
+            var chromeW = ActualWidth - _view.ActualWidth;
+            var chromeH = ActualHeight - _view.ActualHeight;
+            var newClientW = _view.ActualHeight;
+            var newClientH = _view.ActualWidth;
             var workArea = SystemParameters.WorkArea;
             var fit = Math.Min(1.0, Math.Min(
                 (workArea.Width - chromeW) / newClientW,

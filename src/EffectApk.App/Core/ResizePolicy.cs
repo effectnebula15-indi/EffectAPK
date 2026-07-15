@@ -13,9 +13,12 @@ public static class ResizePolicy
     //   минимум 320 px (иначе многие приложения ломают вёрстку).
     public static (int Width, int Height) ComputeAndroidResolution(int clientWidthPx, int clientHeightPx)
     {
+        // Никакого округления: wm size принимает любые значения, а выравнивание под кодек
+        // (кратность 8) делает сам scrcpy-server. Любое наше округление приводило к дрейфу
+        // пропорций между окном и дисплеем — тонким чёрным полосам по краям.
         var scale = Math.Min(1.0, 1920.0 / Math.Max(clientWidthPx, clientHeightPx));
-        var width = Math.Max(320, (int)(clientWidthPx * scale) & ~7);
-        var height = Math.Max(320, (int)(clientHeightPx * scale) & ~7);
+        var width = Math.Max(320, (int)Math.Round(clientWidthPx * scale));
+        var height = Math.Max(320, (int)Math.Round(clientHeightPx * scale));
         return (width, height);
     }
 

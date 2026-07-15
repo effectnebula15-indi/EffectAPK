@@ -171,12 +171,12 @@ public partial class App : Application
                 saved.WindowLeft, saved.WindowTop, saved.WindowWidth, saved.WindowHeight)
             : null;
 
-        var scrcpy = await ScrcpySession.StartAsync(_settings, apk.PackageName, adb, displayWidth, displayHeight, _cts.Token);
+        var scrcpy = await ScrcpyClient.StartAsync(_settings, apk.PackageName, adb, displayWidth, displayHeight, _cts.Token);
 
         var window = new AppHostWindow(
             title: apk.Label,
             icon: ApkInspector.TryExtractIcon(apk),
-            scrcpyHwnd: scrcpy.WindowHandle,
+            client: scrcpy,
             displayWidth: displayWidth,
             displayHeight: displayHeight,
             restoredState: restored,
@@ -185,6 +185,10 @@ public partial class App : Application
                 if (scrcpy.DisplayId is not { } displayId) return;
                 await adb.SetDisplaySizeAsync(displayId, width, height);
                 await adb.SetDisplayDensityAsync(displayId, density);
+                // Смена конфигурации дисплея выкидывает приложение на лаунчер вторичного
+                // дисплея — возвращаем его на передний план (am start на живую активность
+                // просто выводит её вперёд, без пересоздания).
+                await adb.StartAppOnDisplayAsync(apk.PackageName, displayId);
             },
             onClosedAsync: async snapshot =>
             {
@@ -216,23 +220,23 @@ public partial class App : Application
         window.Show();
         window.Activate();
 
-        // scrcpy при старте может сам поставить override-разрешение виртуального дисплея
-        // (реагируя на первый ресайз своего окна при встраивании) — через пару секунд
-        // синхронизируем дисплей с фактическими пикселями окна (разрешение + плотность).
+        // Один раз подгоняем разрешение дисплея под фактические пиксели окна (окно могло
+        // восстановиться в размере, отличном от стартового new_display) — только если
+        // размер реально отличается, иначе лишний раз не тревожим приложение.
         _ = Task.Run(async () =>
         {
             try
             {
-                await Task.Delay(2500, _cts.Token);
-                if (!scrcpy.HasExited)
-                    await window.Dispatcher.InvokeAsync(() => _ = window.SyncResolutionToWindowAsync());
+                await Task.Delay(1200, _cts.Token);
+                if (scrcpy.HasExited) return;
+                await window.Dispatcher.InvokeAsync(() => _ = window.SyncResolutionToWindowIfNeededAsync());
             }
             catch (OperationCanceledException)
             {
             }
             catch (Exception ex)
             {
-                Logger.Error("Не удалось синхронизировать разрешение после старта", ex);
+                Logger.Error("Пост-стартовая синхронизация не удалась", ex);
             }
         });
     }
