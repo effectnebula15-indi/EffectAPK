@@ -18,6 +18,21 @@ internal static class NativeMethods
         public int X, Y;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MINMAXINFO
+    {
+        public POINT ptReserved, ptMaxSize, ptMaxPosition, ptMinTrackSize, ptMaxTrackSize;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MONITORINFO
+    {
+        public int cbSize;
+        public RECT rcMonitor;
+        public RECT rcWork;
+        public uint dwFlags;
+    }
+
     public const int GWL_STYLE = -16;
 
     public const uint WS_CHILD = 0x40000000;
@@ -29,6 +44,7 @@ internal static class NativeMethods
     public const uint WS_MINIMIZEBOX = 0x00020000;
     public const uint WS_MAXIMIZEBOX = 0x00010000;
 
+    public const int WM_GETMINMAXINFO = 0x0024;
     public const int WM_SIZE = 0x0005;
     public const int WM_SIZING = 0x0214;
     public const int WM_ENTERSIZEMOVE = 0x0231;
@@ -56,6 +72,18 @@ internal static class NativeMethods
 
     public const int SHCNE_ASSOCCHANGED = 0x08000000;
     public const uint SHCNF_IDLIST = 0;
+
+    public const uint SPI_GETWORKAREA = 0x0030;
+    public const uint MONITOR_DEFAULTTONEAREST = 2;
+
+    [DllImport("user32.dll")]
+    public static extern bool SystemParametersInfo(uint action, uint param, ref RECT rect, uint winIni);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr MonitorFromWindow(IntPtr hWnd, uint flags);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO info);
 
     [DllImport("user32.dll")]
     public static extern short GetKeyState(int nVirtKey);

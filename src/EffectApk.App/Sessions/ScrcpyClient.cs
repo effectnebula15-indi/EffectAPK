@@ -93,7 +93,9 @@ public sealed class ScrcpyClient : IDisposable
             " control=true tunnel_forward=true cleanup=true" +
             " send_device_meta=false send_frame_meta=true send_codec_meta=true send_dummy_byte=true" +
             " clipboard_autosync=false" +
-            $" new_display={displayWidth}x{displayHeight}/{settings.DisplayDpi}" +
+            // Плотность сразу правильная для этого размера — иначе при точном совпадении
+            // окна с дисплеем пост-стартовая синхронизация не сработает и не поправит её
+            $" new_display={displayWidth}x{displayHeight}/{ResizePolicy.ComputeDensity(displayWidth, displayHeight)}" +
             $" start_app={packageName}";
 
         _serverProcess = _adb.StartShellDetached(serverCommand, line =>
